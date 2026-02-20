@@ -2,12 +2,64 @@
 MongoDB database configuration and setup for Mergington High School API
 """
 
+import os
+
 from pymongo import MongoClient
 from argon2 import PasswordHasher, exceptions as argon2_exceptions
 
+try:
+    import mongomock
+except Exception:
+    mongomock = None
+
 # Connect to MongoDB
-client = MongoClient('mongodb://localhost:27017/')
-db = client['mergington_high']
+def _create_mongo_client() -> MongoClient:
+    """Create a connected MongoDB client using env config and sensible fallbacks."""
+    timeout_ms = int(os.getenv("MONGODB_TIMEOUT_MS", "3000"))
+    configured_uri = os.getenv("MONGODB_URI")
+
+    if configured_uri:
+        candidate_uris = [configured_uri]
+    else:
+        candidate_uris = [
+            "mongodb://localhost:27017/",
+            "mongodb://mongodb:27017/",
+            "mongodb://host.docker.internal:27017/",
+        ]
+
+    errors = []
+    for uri in candidate_uris:
+        try:
+            mongo_client = MongoClient(
+                uri,
+                serverSelectionTimeoutMS=timeout_ms,
+                connectTimeoutMS=timeout_ms,
+                socketTimeoutMS=timeout_ms,
+            )
+            mongo_client.admin.command("ping")
+            return mongo_client
+        except Exception as exc:
+            errors.append(f"{uri} -> {exc}")
+
+    use_mock_db = os.getenv("MONGODB_ALLOW_MOCK", "true").lower() == "true"
+    if use_mock_db and mongomock is not None:
+        print(
+            "MongoDB is not reachable; falling back to in-memory mongomock database. "
+            "Set MONGODB_URI to a live instance to use real MongoDB."
+        )
+        return mongomock.MongoClient()
+
+    raise RuntimeError(
+        "MongoDB connection failed. "
+        "Set MONGODB_URI to your running Mongo instance (e.g. "
+        "mongodb://localhost:27017/ or mongodb://mongodb:27017/), "
+        "or enable MONGODB_ALLOW_MOCK=true after installing mongomock. "
+        f"Attempts: {', '.join(errors)}"
+    )
+
+
+client = _create_mongo_client()
+db = client[os.getenv("MONGODB_DB", "mergington_high")]
 activities_collection = db['activities']
 teachers_collection = db['teachers']
 
